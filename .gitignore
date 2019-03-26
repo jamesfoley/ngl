@@ -8,3 +8,5 @@ npm-debug.log
 
 *.offsets
 package-lock.json
+
+.idea
