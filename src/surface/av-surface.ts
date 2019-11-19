@@ -585,23 +585,23 @@ function AVSurface (this: AVSurface, coordList: Float32Array, radiusList: Float3
     // 2) Project points
     // 3) Project torii
 
-    console.time('AVSurface.getVolume')
+    // console.time('AVSurface.getVolume')
 
-    console.time('AVSurface.init')
+    // console.time('AVSurface.init')
     init(probeRadius, scaleFactor, setAtomID)
-    console.timeEnd('AVSurface.init')
+    // console.timeEnd('AVSurface.init')
 
-    console.time('AVSurface.projectPoints')
+    // console.time('AVSurface.projectPoints')
     projectPoints()
-    console.timeEnd('AVSurface.projectPoints')
+    // console.timeEnd('AVSurface.projectPoints')
 
-    console.time('AVSurface.projectTorii')
+    // console.time('AVSurface.projectTorii')
     projectTorii()
-    console.timeEnd('AVSurface.projectTorii')
+    // console.timeEnd('AVSurface.projectTorii')
     fixNegatives()
     fixAtomIDs()
 
-    console.timeEnd('AVSurface.getVolume')
+    // console.timeEnd('AVSurface.getVolume')
   }
 
   this.getSurface = function (type: string, probeRadius: number, scaleFactor: number, cutoff: number, setAtomID: boolean, smooth: number, contour: boolean) {

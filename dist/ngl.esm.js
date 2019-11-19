@@ -54539,9 +54539,9 @@ TiledRenderer.prototype._renderTile = function _renderTile (i) {
     viewer.camera.setViewOffset(width * factor, height * factor, offsetX, offsetY, width, height);
     viewer.render();
     if (this._antialias) {
-        var rx = (offsetX % 2) * (width % 2);
-        var ry = (offsetY % 2) * (height % 2);
-        this._ctx.drawImage(viewer.renderer.domElement, Math.floor(offsetX / 2) + rx, Math.floor(offsetY / 2) + ry, Math.ceil(width / 2) - rx, Math.ceil(height / 2) - ry);
+        var w = Math.round((offsetX + width) / 2) - Math.round(offsetX / 2);
+        var h = Math.round((offsetY + height) / 2) - Math.round(offsetY / 2);
+        this._ctx.drawImage(viewer.renderer.domElement, Math.round(offsetX / 2), Math.round(offsetY / 2), w, h);
     }
     else {
         this._ctx.drawImage(viewer.renderer.domElement, Math.floor(offsetX), Math.floor(offsetY), Math.ceil(width), Math.ceil(height));
@@ -55487,6 +55487,8 @@ Viewer.prototype._initParams = function _initParams () {
         fogColor: new Color(0x000000),
         fogNear: 50,
         fogFar: 100,
+        fogMode: 'scene',
+        fogScale: 'relative',
         backgroundColor: new Color(0x000000),
         cameraType: 'perspective',
         cameraFov: 40,
@@ -55495,6 +55497,8 @@ Viewer.prototype._initParams = function _initParams () {
         clipNear: 0,
         clipFar: 100,
         clipDist: 10,
+        clipMode: 'scene',
+        clipScale: 'relative',
         lightColor: new Color(0xdddddd),
         lightIntensity: 1.0,
         ambientColor: new Color(0xdddddd),
@@ -55903,7 +55907,7 @@ Viewer.prototype.setLight = function setLight (color, intensity, ambientColor, a
         { p.ambientIntensity = ambientIntensity; }
     this.requestRender();
 };
-Viewer.prototype.setFog = function setFog (color, near, far) {
+Viewer.prototype.setFog = function setFog (color, near, far, fogMode, fogScale) {
     var p = this.parameters;
     if (color !== undefined)
         { p.fogColor.set(color); } // TODO
@@ -55911,6 +55915,10 @@ Viewer.prototype.setFog = function setFog (color, near, far) {
         { p.fogNear = near; }
     if (far !== undefined)
         { p.fogFar = far; }
+    if (fogMode !== undefined)
+        { p.fogMode = fogMode; }
+    if (fogScale !== undefined)
+        { p.fogScale = fogScale; }
     this.requestRender();
 };
 Viewer.prototype.setBackground = function setBackground (color) {
@@ -55960,7 +55968,7 @@ Viewer.prototype.setCamera = function setCamera (type, fov, eyeSep) {
     this.camera.updateProjectionMatrix();
     this.requestRender();
 };
-Viewer.prototype.setClip = function setClip (near, far, dist) {
+Viewer.prototype.setClip = function setClip (near, far, dist, clipMode, clipScale) {
     var p = this.parameters;
     if (near !== undefined)
         { p.clipNear = near; }
@@ -55968,6 +55976,10 @@ Viewer.prototype.setClip = function setClip (near, far, dist) {
         { p.clipFar = far; }
     if (dist !== undefined)
         { p.clipDist = dist; }
+    if (clipMode !== undefined)
+        { p.clipMode = clipMode; }
+    if (clipScale !== undefined)
+        { p.clipScale = clipScale; }
     this.requestRender();
 };
 Viewer.prototype.setSize = function setSize (width, height) {
@@ -56124,30 +56136,65 @@ Viewer.prototype.__updateClipping = function __updateClipping () {
     // cDist = distVector.copy( camera.position )
     //       .sub( controls.target ).length();
     this.cDist = this.distVector.copy(this.camera.position).length();
-    // console.log( "cDist", cDist )
     if (!this.cDist) {
         // recover from a broken (NaN) camera position
         this.camera.position.set(0, 0, p.cameraZ);
         this.cDist = Math.abs(p.cameraZ);
     }
-    this.bRadius = Math.max(10, this.boundingBoxLength * 0.5);
-    this.bRadius += this.boundingBox.getCenter(this.distVector).length();
-    // console.log( "bRadius", bRadius )
-    if (this.bRadius === Infinity || this.bRadius === -Infinity || isNaN(this.bRadius)) {
-        // console.warn( "something wrong with bRadius" );
-        this.bRadius = 50;
+    if (p.clipScale !== 'absolute' || p.fogScale !== 'absolute') {
+        // Compute bbox radius if needed for relative clip/fog
+        this.bRadius = Math.max(10, this.boundingBoxLength * 0.5);
+        this.bRadius += this.boundingBox.getCenter(this.distVector).length();
+        // console.log( "bRadius", this.bRadius )
+        if (this.bRadius === Infinity || this.bRadius === -Infinity || isNaN(this.bRadius)) {
+            // console.warn( "something wrong with bRadius" );
+            this.bRadius = 50;
+        }
     }
-    var nearFactor = (50 - p.clipNear) / 50;
-    var farFactor = -(50 - p.clipFar) / 50;
-    this.camera.near = this.cDist - (this.bRadius * nearFactor);
-    this.camera.far = this.cDist + (this.bRadius * farFactor);
+    if (p.clipMode == 'camera') {
+        // clip camera mode ignores clipScale; always absolute
+        this.camera.near = p.clipNear;
+        this.camera.far = p.clipFar;
+    }
+    else {
+        // scene mode
+        if (p.clipScale == 'absolute') {
+            // absolute scene mode: offset clip planes from scene center
+            // (note: positive clipNear means closer to the camera)
+            this.camera.near = this.cDist - p.clipNear;
+            this.camera.far = this.cDist + p.clipFar;
+        }
+        else {
+            // relative scene mode (default): convert percentages to Angstroms
+            var nearFactor = (50 - p.clipNear) / 50;
+            var farFactor = -(50 - p.clipFar) / 50;
+            this.camera.near = this.cDist - (this.bRadius * nearFactor);
+            this.camera.far = this.cDist + (this.bRadius * farFactor);
+        }
+    }
     // fog
-    var fogNearFactor = (50 - p.fogNear) / 50;
-    var fogFarFactor = -(50 - p.fogFar) / 50;
     var fog = this.scene.fog; // TODO
     fog.color.set(p.fogColor);
-    fog.near = this.cDist - (this.bRadius * fogNearFactor);
-    fog.far = this.cDist + (this.bRadius * fogFarFactor);
+    if (p.fogMode == 'camera') {
+        // fog camera mode ignores clipScale; always absolute
+        fog.near = p.fogNear;
+        fog.far = p.fogFar;
+    }
+    else {
+        // scene mode
+        if (p.fogScale == 'absolute') {
+            // absolute scene mode: offset fog planes from scene center
+            // (fogNear should typically be negative for this mode)
+            fog.near = this.cDist + p.fogNear;
+            fog.far = this.cDist + p.fogFar;
+        }
+        else {
+            var fogNearFactor = (50 - p.fogNear) / 50;
+            var fogFarFactor = -(50 - p.fogFar) / 50;
+            fog.near = this.cDist - (this.bRadius * fogNearFactor);
+            fog.far = this.cDist + (this.bRadius * fogFarFactor);
+        }
+    }
     if (this.camera.type === 'PerspectiveCamera') {
         this.camera.near = Math.max(0.1, p.clipDist, this.camera.near);
         this.camera.far = Math.max(1, this.camera.far);
@@ -56902,7 +56949,7 @@ var PickingProxy = function PickingProxy(pickingData, stage) {
     this.mouse = stage.mouseObserver;
 };
 
-var prototypeAccessors$4 = { type: { configurable: true },altKey: { configurable: true },ctrlKey: { configurable: true },metaKey: { configurable: true },shiftKey: { configurable: true },canvasPosition: { configurable: true },component: { configurable: true },object: { configurable: true },position: { configurable: true },closestBondAtom: { configurable: true },closeAtom: { configurable: true },arrow: { configurable: true },atom: { configurable: true },axes: { configurable: true },bond: { configurable: true },box: { configurable: true },cone: { configurable: true },clash: { configurable: true },contact: { configurable: true },cylinder: { configurable: true },distance: { configurable: true },ellipsoid: { configurable: true },octahedron: { configurable: true },point: { configurable: true },mesh: { configurable: true },slice: { configurable: true },sphere: { configurable: true },tetrahedron: { configurable: true },torus: { configurable: true },surface: { configurable: true },unitcell: { configurable: true },unknown: { configurable: true },volume: { configurable: true },wideline: { configurable: true } };
+var prototypeAccessors$4 = { type: { configurable: true },altKey: { configurable: true },ctrlKey: { configurable: true },metaKey: { configurable: true },shiftKey: { configurable: true },canvasPosition: { configurable: true },component: { configurable: true },object: { configurable: true },position: { configurable: true },closestBondAtom: { configurable: true },closeAtom: { configurable: true },arrow: { configurable: true },atom: { configurable: true },axes: { configurable: true },bond: { configurable: true },box: { configurable: true },cone: { configurable: true },clash: { configurable: true },contact: { configurable: true },cylinder: { configurable: true },distance: { configurable: true },ellipsoid: { configurable: true },icosahedron: { configurable: true },octahedron: { configurable: true },point: { configurable: true },mesh: { configurable: true },slice: { configurable: true },sphere: { configurable: true },tetrahedron: { configurable: true },torus: { configurable: true },surface: { configurable: true },unitcell: { configurable: true },unknown: { configurable: true },volume: { configurable: true },wideline: { configurable: true } };
 /**
  * Kind of the picked data
  * @type {String}
@@ -57043,6 +57090,10 @@ prototypeAccessors$4.ellipsoid.get = function () { return this._objectIfType('el
 /**
  * @type {Object}
  */
+prototypeAccessors$4.icosahedron.get = function () { return this._objectIfType('icosahedron'); };
+/**
+ * @type {Object}
+ */
 prototypeAccessors$4.octahedron.get = function () { return this._objectIfType('octahedron'); };
 /**
  * @type {Object}
@@ -57126,6 +57177,9 @@ PickingProxy.prototype.getLabel = function getLabel () {
     }
     else if (this.ellipsoid) {
         msg = this.ellipsoid.name;
+    }
+    else if (this.icosahedron) {
+        msg = this.icosahedron.name;
     }
     else if (this.octahedron) {
         msg = this.octahedron.name;
@@ -57251,9 +57305,11 @@ prototypeAccessors$5.rotation.get = function () {
  * @emits {ViewerControls.signals.changed}
  * @return {undefined}
  */
-ViewerControls.prototype.changed = function changed () {
+ViewerControls.prototype.changed = function changed (skipDispatch) {
     this.viewer.requestRender();
-    this.signals.changed.dispatch();
+    skipDispatch = skipDispatch === undefined ? false : skipDispatch;
+    if (!skipDispatch)
+        { this.signals.changed.dispatch(); }
 };
 ViewerControls.prototype.getPositionOnCanvas = function getPositionOnCanvas (position, optionalTarget) {
     var canvasPosition = ensureVector2(optionalTarget);
@@ -57297,14 +57353,14 @@ ViewerControls.prototype.getOrientation = function getOrientation (optionalTarge
  * @param {OrientationMatrix|Array} orientation - scene orientation
  * @return {undefined}
  */
-ViewerControls.prototype.orient = function orient (orientation) {
+ViewerControls.prototype.orient = function orient (orientation, skipDispatch) {
     ensureMatrix4(orientation).decompose(tmpP, tmpQ, tmpS);
     var v = this.viewer;
     v.rotationGroup.setRotationFromQuaternion(tmpQ);
     v.translationGroup.position.copy(tmpP);
     v.camera.position.z = -tmpS.z;
     v.updateZoom();
-    this.changed();
+    this.changed(skipDispatch);
 };
 /**
  * translate scene
@@ -59282,6 +59338,21 @@ var TetrahedronPrimitive = (function (BoxPrimitive) {
 }(BoxPrimitive));
 TetrahedronPrimitive.type = 'tetrahedron';
 /**
+ * Icosahedron geometry primitive
+ */
+var IcosahedronPrimitive = (function (BoxPrimitive) {
+    function IcosahedronPrimitive () {
+        BoxPrimitive.apply(this, arguments);
+    }if ( BoxPrimitive ) IcosahedronPrimitive.__proto__ = BoxPrimitive;
+    IcosahedronPrimitive.prototype = Object.create( BoxPrimitive && BoxPrimitive.prototype );
+    IcosahedronPrimitive.prototype.constructor = IcosahedronPrimitive;
+
+    
+
+    return IcosahedronPrimitive;
+}(BoxPrimitive));
+IcosahedronPrimitive.type = 'icosahedron';
+/**
  * Cylinder geometry primitive
  */
 var CylinderPrimitive = (function (Primitive) {
@@ -60593,9 +60664,9 @@ var AA1 = {
     'PYL': 'O',
 };
 var AA3 = Object.keys(AA1);
-var RnaBases = ['A', 'C', 'T', 'G', 'U'];
-var DnaBases = ['DA', 'DC', 'DT', 'DG', 'DU'];
-var PurinBases = ['A', 'G', 'DA', 'DG'];
+var RnaBases = ['A', 'C', 'T', 'G', 'U', 'I'];
+var DnaBases = ['DA', 'DC', 'DT', 'DG', 'DU', 'DI'];
+var PurinBases = ['A', 'G', 'I', 'DA', 'DG', 'DI'];
 var Bases = RnaBases.concat(DnaBases);
 var WaterNames = [
     'SOL', 'WAT', 'HOH', 'H2O', 'W', 'DOD', 'D3O', 'TIP3', 'TIP4', 'SPC'
@@ -62950,6 +63021,23 @@ var EllipsoidPicker = (function (ShapePicker) {
 
     return EllipsoidPicker;
 }(ShapePicker));
+var IcosahedronPicker = (function (ShapePicker) {
+    function IcosahedronPicker () {
+        ShapePicker.apply(this, arguments);
+    }
+
+    if ( ShapePicker ) IcosahedronPicker.__proto__ = ShapePicker;
+    IcosahedronPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
+    IcosahedronPicker.prototype.constructor = IcosahedronPicker;
+
+    var prototypeAccessors$12 = { primitive: { configurable: true } };
+
+    prototypeAccessors$12.primitive.get = function () { return IcosahedronPrimitive; };
+
+    Object.defineProperties( IcosahedronPicker.prototype, prototypeAccessors$12 );
+
+    return IcosahedronPicker;
+}(ShapePicker));
 var OctahedronPicker = (function (ShapePicker) {
     function OctahedronPicker () {
         ShapePicker.apply(this, arguments);
@@ -62959,11 +63047,11 @@ var OctahedronPicker = (function (ShapePicker) {
     OctahedronPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     OctahedronPicker.prototype.constructor = OctahedronPicker;
 
-    var prototypeAccessors$12 = { primitive: { configurable: true } };
+    var prototypeAccessors$13 = { primitive: { configurable: true } };
 
-    prototypeAccessors$12.primitive.get = function () { return OctahedronPrimitive; };
+    prototypeAccessors$13.primitive.get = function () { return OctahedronPrimitive; };
 
-    Object.defineProperties( OctahedronPicker.prototype, prototypeAccessors$12 );
+    Object.defineProperties( OctahedronPicker.prototype, prototypeAccessors$13 );
 
     return OctahedronPicker;
 }(ShapePicker));
@@ -62976,11 +63064,11 @@ var BoxPicker = (function (ShapePicker) {
     BoxPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     BoxPicker.prototype.constructor = BoxPicker;
 
-    var prototypeAccessors$13 = { primitive: { configurable: true } };
+    var prototypeAccessors$14 = { primitive: { configurable: true } };
 
-    prototypeAccessors$13.primitive.get = function () { return BoxPrimitive; };
+    prototypeAccessors$14.primitive.get = function () { return BoxPrimitive; };
 
-    Object.defineProperties( BoxPicker.prototype, prototypeAccessors$13 );
+    Object.defineProperties( BoxPicker.prototype, prototypeAccessors$14 );
 
     return BoxPicker;
 }(ShapePicker));
@@ -62993,11 +63081,11 @@ var IgnorePicker = (function (Picker) {
     IgnorePicker.prototype = Object.create( Picker && Picker.prototype );
     IgnorePicker.prototype.constructor = IgnorePicker;
 
-    var prototypeAccessors$14 = { type: { configurable: true } };
+    var prototypeAccessors$15 = { type: { configurable: true } };
 
-    prototypeAccessors$14.type.get = function () { return 'ignore'; };
+    prototypeAccessors$15.type.get = function () { return 'ignore'; };
 
-    Object.defineProperties( IgnorePicker.prototype, prototypeAccessors$14 );
+    Object.defineProperties( IgnorePicker.prototype, prototypeAccessors$15 );
 
     return IgnorePicker;
 }(Picker));
@@ -63011,8 +63099,8 @@ var MeshPicker = (function (ShapePicker) {
     MeshPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     MeshPicker.prototype.constructor = MeshPicker;
 
-    var prototypeAccessors$15 = { type: { configurable: true } };
-    prototypeAccessors$15.type.get = function () { return 'mesh'; };
+    var prototypeAccessors$16 = { type: { configurable: true } };
+    prototypeAccessors$16.type.get = function () { return 'mesh'; };
     MeshPicker.prototype.getObject = function getObject ( /* pid */) {
         var m = this.mesh;
         return {
@@ -63028,7 +63116,7 @@ var MeshPicker = (function (ShapePicker) {
         return this.__position;
     };
 
-    Object.defineProperties( MeshPicker.prototype, prototypeAccessors$15 );
+    Object.defineProperties( MeshPicker.prototype, prototypeAccessors$16 );
 
     return MeshPicker;
 }(ShapePicker));
@@ -63041,11 +63129,11 @@ var SpherePicker = (function (ShapePicker) {
     SpherePicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     SpherePicker.prototype.constructor = SpherePicker;
 
-    var prototypeAccessors$16 = { primitive: { configurable: true } };
+    var prototypeAccessors$17 = { primitive: { configurable: true } };
 
-    prototypeAccessors$16.primitive.get = function () { return SpherePrimitive; };
+    prototypeAccessors$17.primitive.get = function () { return SpherePrimitive; };
 
-    Object.defineProperties( SpherePicker.prototype, prototypeAccessors$16 );
+    Object.defineProperties( SpherePicker.prototype, prototypeAccessors$17 );
 
     return SpherePicker;
 }(ShapePicker));
@@ -63059,9 +63147,9 @@ var SurfacePicker = (function (Picker) {
     SurfacePicker.prototype = Object.create( Picker && Picker.prototype );
     SurfacePicker.prototype.constructor = SurfacePicker;
 
-    var prototypeAccessors$17 = { type: { configurable: true },data: { configurable: true } };
-    prototypeAccessors$17.type.get = function () { return 'surface'; };
-    prototypeAccessors$17.data.get = function () { return this.surface; };
+    var prototypeAccessors$18 = { type: { configurable: true },data: { configurable: true } };
+    prototypeAccessors$18.type.get = function () { return 'surface'; };
+    prototypeAccessors$18.data.get = function () { return this.surface; };
     SurfacePicker.prototype.getObject = function getObject (pid) {
         return {
             surface: this.surface,
@@ -63072,7 +63160,7 @@ var SurfacePicker = (function (Picker) {
         return this.surface.center.clone();
     };
 
-    Object.defineProperties( SurfacePicker.prototype, prototypeAccessors$17 );
+    Object.defineProperties( SurfacePicker.prototype, prototypeAccessors$18 );
 
     return SurfacePicker;
 }(Picker));
@@ -63085,11 +63173,11 @@ var TetrahedronPicker = (function (ShapePicker) {
     TetrahedronPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     TetrahedronPicker.prototype.constructor = TetrahedronPicker;
 
-    var prototypeAccessors$18 = { primitive: { configurable: true } };
+    var prototypeAccessors$19 = { primitive: { configurable: true } };
 
-    prototypeAccessors$18.primitive.get = function () { return TetrahedronPrimitive; };
+    prototypeAccessors$19.primitive.get = function () { return TetrahedronPrimitive; };
 
-    Object.defineProperties( TetrahedronPicker.prototype, prototypeAccessors$18 );
+    Object.defineProperties( TetrahedronPicker.prototype, prototypeAccessors$19 );
 
     return TetrahedronPicker;
 }(ShapePicker));
@@ -63102,11 +63190,11 @@ var TorusPicker = (function (ShapePicker) {
     TorusPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     TorusPicker.prototype.constructor = TorusPicker;
 
-    var prototypeAccessors$19 = { primitive: { configurable: true } };
+    var prototypeAccessors$20 = { primitive: { configurable: true } };
 
-    prototypeAccessors$19.primitive.get = function () { return TorusPrimitive; };
+    prototypeAccessors$20.primitive.get = function () { return TorusPrimitive; };
 
-    Object.defineProperties( TorusPicker.prototype, prototypeAccessors$19 );
+    Object.defineProperties( TorusPicker.prototype, prototypeAccessors$20 );
 
     return TorusPicker;
 }(ShapePicker));
@@ -63121,9 +63209,9 @@ var UnitcellPicker = (function (Picker) {
     UnitcellPicker.prototype = Object.create( Picker && Picker.prototype );
     UnitcellPicker.prototype.constructor = UnitcellPicker;
 
-    var prototypeAccessors$20 = { type: { configurable: true },data: { configurable: true } };
-    prototypeAccessors$20.type.get = function () { return 'unitcell'; };
-    prototypeAccessors$20.data.get = function () { return this.unitcell; };
+    var prototypeAccessors$21 = { type: { configurable: true },data: { configurable: true } };
+    prototypeAccessors$21.type.get = function () { return 'unitcell'; };
+    prototypeAccessors$21.data.get = function () { return this.unitcell; };
     UnitcellPicker.prototype.getObject = function getObject ( /* pid */) {
         return {
             unitcell: this.unitcell,
@@ -63134,7 +63222,7 @@ var UnitcellPicker = (function (Picker) {
         return this.unitcell.getCenter(this.structure);
     };
 
-    Object.defineProperties( UnitcellPicker.prototype, prototypeAccessors$20 );
+    Object.defineProperties( UnitcellPicker.prototype, prototypeAccessors$21 );
 
     return UnitcellPicker;
 }(Picker));
@@ -63147,11 +63235,11 @@ var UnknownPicker = (function (Picker) {
     UnknownPicker.prototype = Object.create( Picker && Picker.prototype );
     UnknownPicker.prototype.constructor = UnknownPicker;
 
-    var prototypeAccessors$21 = { type: { configurable: true } };
+    var prototypeAccessors$22 = { type: { configurable: true } };
 
-    prototypeAccessors$21.type.get = function () { return 'unknown'; };
+    prototypeAccessors$22.type.get = function () { return 'unknown'; };
 
-    Object.defineProperties( UnknownPicker.prototype, prototypeAccessors$21 );
+    Object.defineProperties( UnknownPicker.prototype, prototypeAccessors$22 );
 
     return UnknownPicker;
 }(Picker));
@@ -63165,9 +63253,9 @@ var VolumePicker = (function (Picker) {
     VolumePicker.prototype = Object.create( Picker && Picker.prototype );
     VolumePicker.prototype.constructor = VolumePicker;
 
-    var prototypeAccessors$22 = { type: { configurable: true },data: { configurable: true } };
-    prototypeAccessors$22.type.get = function () { return 'volume'; };
-    prototypeAccessors$22.data.get = function () { return this.volume; };
+    var prototypeAccessors$23 = { type: { configurable: true },data: { configurable: true } };
+    prototypeAccessors$23.type.get = function () { return 'volume'; };
+    prototypeAccessors$23.data.get = function () { return this.volume; };
     VolumePicker.prototype.getObject = function getObject (pid) {
         var vol = this.volume;
         var idx = this.getIndex(pid);
@@ -63183,7 +63271,7 @@ var VolumePicker = (function (Picker) {
         return new Vector3(dp[idx * 3], dp[idx * 3 + 1], dp[idx * 3 + 2]);
     };
 
-    Object.defineProperties( VolumePicker.prototype, prototypeAccessors$22 );
+    Object.defineProperties( VolumePicker.prototype, prototypeAccessors$23 );
 
     return VolumePicker;
 }(Picker));
@@ -63196,11 +63284,11 @@ var SlicePicker = (function (VolumePicker) {
     SlicePicker.prototype = Object.create( VolumePicker && VolumePicker.prototype );
     SlicePicker.prototype.constructor = SlicePicker;
 
-    var prototypeAccessors$23 = { type: { configurable: true } };
+    var prototypeAccessors$24 = { type: { configurable: true } };
 
-    prototypeAccessors$23.type.get = function () { return 'slice'; };
+    prototypeAccessors$24.type.get = function () { return 'slice'; };
 
-    Object.defineProperties( SlicePicker.prototype, prototypeAccessors$23 );
+    Object.defineProperties( SlicePicker.prototype, prototypeAccessors$24 );
 
     return SlicePicker;
 }(VolumePicker));
@@ -63213,11 +63301,11 @@ var PointPicker = (function (ShapePicker) {
     PointPicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     PointPicker.prototype.constructor = PointPicker;
 
-    var prototypeAccessors$24 = { primitive: { configurable: true } };
+    var prototypeAccessors$25 = { primitive: { configurable: true } };
 
-    prototypeAccessors$24.primitive.get = function () { return PointPrimitive; };
+    prototypeAccessors$25.primitive.get = function () { return PointPrimitive; };
 
-    Object.defineProperties( PointPicker.prototype, prototypeAccessors$24 );
+    Object.defineProperties( PointPicker.prototype, prototypeAccessors$25 );
 
     return PointPicker;
 }(ShapePicker));
@@ -63230,11 +63318,11 @@ var WidelinePicker = (function (ShapePicker) {
     WidelinePicker.prototype = Object.create( ShapePicker && ShapePicker.prototype );
     WidelinePicker.prototype.constructor = WidelinePicker;
 
-    var prototypeAccessors$25 = { primitive: { configurable: true } };
+    var prototypeAccessors$26 = { primitive: { configurable: true } };
 
-    prototypeAccessors$25.primitive.get = function () { return WidelinePrimitive; };
+    prototypeAccessors$26.primitive.get = function () { return WidelinePrimitive; };
 
-    Object.defineProperties( WidelinePicker.prototype, prototypeAccessors$25 );
+    Object.defineProperties( WidelinePicker.prototype, prototypeAccessors$26 );
 
     return WidelinePicker;
 }(ShapePicker));
@@ -63243,6 +63331,7 @@ PickerRegistry.add('box', BoxPicker);
 PickerRegistry.add('cone', ConePicker);
 PickerRegistry.add('cylinder', CylinderPicker);
 PickerRegistry.add('ellipsoid', EllipsoidPicker);
+PickerRegistry.add('icosahedron', IcosahedronPicker);
 PickerRegistry.add('octahedron', OctahedronPicker);
 PickerRegistry.add('sphere', SpherePicker);
 PickerRegistry.add('tetrahedron', TetrahedronPicker);
@@ -64174,6 +64263,35 @@ function transpose(At, A) {
             { atd[pAt] = ad[Ai + j]; }
     }
 }
+// C = A * B
+function multiply(C, A, B) {
+    var i = 0;
+    var j = 0;
+    var k = 0;
+    var Ap = 0;
+    var pA = 0;
+    var pB = 0;
+    var _pB = 0;
+    var Cp = 0;
+    var ncols = A.cols;
+    var nrows = A.rows;
+    var mcols = B.cols;
+    var ad = A.data;
+    var bd = B.data;
+    var cd = C.data;
+    var sum = 0.0;
+    for (; i < nrows; Ap += ncols, i++) {
+        for (_pB = 0, j = 0; j < mcols; Cp++, _pB++, j++) {
+            pB = _pB;
+            pA = Ap;
+            sum = 0.0;
+            for (k = 0; k < ncols; pA++, pB += mcols, k++) {
+                sum += ad[pA] * bd[pB];
+            }
+            cd[Cp] = sum;
+        }
+    }
+}
 // C = A * B'
 function multiplyABt(C, A, B) {
     var i = 0;
@@ -64297,16 +64415,6 @@ function subRows(A, row) {
     for (var i = 0, p = 0; i < nrows; ++i) {
         for (var j = 0; j < ncols; ++j, ++p) {
             Ad[p] -= row[j];
-        }
-    }
-}
-function addRows(A, row) {
-    var nrows = A.rows;
-    var ncols = A.cols;
-    var Ad = A.data;
-    for (var i = 0, p = 0; i < nrows; ++i) {
-        for (var j = 0; j < ncols; ++j, ++p) {
-            Ad[p] += row[j];
         }
     }
 }
@@ -66519,6 +66627,21 @@ DoubleSidedBuffer.prototype.setVisibility = function setVisibility (value) {
 DoubleSidedBuffer.prototype.dispose = function dispose () {
     this.frontBuffer.dispose();
     this.backBuffer.dispose();
+};
+/**
+ * Customize JSON serialization to avoid circular references.
+ * Only export simple params which could be useful.
+ */
+DoubleSidedBuffer.prototype.toJSON = function toJSON () {
+        var this$1 = this;
+
+    var result = {};
+    for (var x in this$1) {
+        if (['side', 'size', 'visible', 'matrix', 'parameters'].includes(x)) {
+            result[x] = this$1[x];
+        }
+    }
+    return result;
 };
 
 Object.defineProperties( DoubleSidedBuffer.prototype, prototypeAccessors$c );
@@ -69106,7 +69229,7 @@ prototypeAccessors$f.chainIndex.get = function () {
  * @type {ResidueProxy}
  */
 prototypeAccessors$f.residue.get = function () {
-    console.warn('residue - might be expensive');
+    // console.warn('residue - might be expensive')
     return this.structure.getResidueProxy(this.residueIndex);
 };
 prototypeAccessors$f.residueIndex.get = function () {
@@ -69583,8 +69706,8 @@ AtomProxy.prototype.connectedTo = function connectedTo (atom) {
     var y = taa.y[ti] - aaa.y[ai];
     var z = taa.z[ti] - aaa.z[ai];
     var distSquared = x * x + y * y + z * z;
-    // if( this.residue.isCg() ) console.log( this.qualifiedName(), Math.sqrt( distSquared ), distSquared )
-    if (distSquared < 64.0 && this.isCg())
+    // if( this.isCg() ) console.log( this.qualifiedName(), Math.sqrt( distSquared ), distSquared )
+    if (distSquared < 48.0 && this.isCg())
         { return true; }
     if (isNaN(distSquared))
         { return false; }
@@ -71702,6 +71825,9 @@ ResidueType.prototype.isRna = function isRna () {
     if (this.chemCompType) {
         return ChemCompRna.includes(this.chemCompType);
     }
+    else if (this.hetero === 1) {
+        return false;
+    }
     else {
         return (this.hasAtomWithName(['P', "O3'", 'O3*'], ["C4'", 'C4*'], ["O2'", 'O2*', "F2'", 'F2*']) ||
             (RnaBases.includes(this.resname) &&
@@ -71711,6 +71837,9 @@ ResidueType.prototype.isRna = function isRna () {
 ResidueType.prototype.isDna = function isDna () {
     if (this.chemCompType) {
         return ChemCompDna.includes(this.chemCompType);
+    }
+    else if (this.hetero === 1) {
+        return false;
     }
     else {
         return ((this.hasAtomWithName(['P', "O3'", 'O3*'], ["C3'", 'C3*']) &&
@@ -74318,7 +74447,7 @@ var tmpBox = new Box3();
 var Primitives = [
     ArrowPrimitive, BoxPrimitive, ConePrimitive, CylinderPrimitive,
     EllipsoidPrimitive, OctahedronPrimitive, SpherePrimitive, TetrahedronPrimitive,
-    TextPrimitive, TorusPrimitive, PointPrimitive, WidelinePrimitive
+    TextPrimitive, TorusPrimitive, PointPrimitive, WidelinePrimitive, IcosahedronPrimitive
 ];
 var ShapeDefaultParameters = {
     aspectRatio: 1.5,
@@ -74560,6 +74689,23 @@ Shape$1.prototype.addOctahedron = function addOctahedron (position, color, size,
  */
 Shape$1.prototype.addTetrahedron = function addTetrahedron (position, color, size, heightAxis, depthAxis, name) {
     TetrahedronPrimitive.objectToShape(this, { position: position, color: color, size: size, heightAxis: heightAxis, depthAxis: depthAxis, name: name });
+    return this;
+};
+/**
+ * Add a icosahedron
+ * @example
+ * shape.addIcosahedron([ 0, 3, 0 ], [ 1, 0, 1 ], 2, [ 0, 1, 1 ], [ 1, 0, 1 ]);
+ *
+ * @param {Vector3|Array} position - position vector or array
+ * @param {Color|Array} color - color object or array
+ * @param {Float} size - size value
+ * @param {Vector3|Array} heightAxis - height axis vector or array
+ * @param {Vector3|Array} depthAxis - depth axis vector or array
+ * @param {String} [name] - text
+ * @return {Shape} this object
+ */
+Shape$1.prototype.addIcosahedron = function addIcosahedron (position, color, size, heightAxis, depthAxis, name) {
+    IcosahedronPrimitive.objectToShape(this, { position: position, color: color, size: size, heightAxis: heightAxis, depthAxis: depthAxis, name: name });
     return this;
 };
 /**
@@ -76834,10 +76980,11 @@ var Superposition = function Superposition(atoms1, atoms2) {
     var coords2 = new Matrix(3, n);
     this.coords1t = new Matrix(n, 3);
     this.coords2t = new Matrix(n, 3);
+    this.transformationMatrix = new Matrix4();
     this.c.data.set([1, 0, 0, 0, 1, 0, 0, 0, -1]);
     // prep coords
-    this.prepCoords(atoms1, coords1, n);
-    this.prepCoords(atoms2, coords2, n);
+    this.prepCoords(atoms1, coords1, n, false);
+    this.prepCoords(atoms2, coords2, n, false);
     // superpose
     this._superpose(coords1, coords2);
 };
@@ -76858,23 +77005,66 @@ Superposition.prototype._superpose = function _superpose (coords1, coords2) {
         multiply3x3(this.tmp, this.c, this.VH);
         multiply3x3(this.R, this.U, this.tmp);
     }
+    //get the transformation matrix
+    var transformMat_ = new Matrix(4, 4);
+    var tmp_1 = new Matrix(4, 4);
+    var tmp_2 = new Matrix(4, 4);
+    var sub = new Matrix(4, 4);
+    var mult = new Matrix(4, 4);
+    var add = new Matrix(4, 4);
+    var R = this.R.data;
+    var M1 = this.mean1;
+    var M2 = this.mean2;
+    sub.data.set([1, 0, 0, -M1[0],
+        0, 1, 0, -M1[1],
+        0, 0, 1, -M1[2],
+        0, 0, 0, 1]);
+    mult.data.set([R[0], R[1], R[2], 0,
+        R[3], R[4], R[5], 0,
+        R[6], R[7], R[8], 0,
+        0, 0, 0, 1]);
+    add.data.set([1, 0, 0, M2[0],
+        0, 1, 0, M2[1],
+        0, 0, 1, M2[2],
+        0, 0, 0, 1]);
+    transpose(tmp_1, sub);
+    multiplyABt(transformMat_, mult, tmp_1);
+    transpose(tmp_2, transformMat_);
+    multiplyABt(tmp_1, add, tmp_2);
+    transpose(transformMat_, tmp_1);
+    this.transformationMatrix.elements = transformMat_.data;
 };
-Superposition.prototype.prepCoords = function prepCoords (atoms, coords, n) {
+Superposition.prototype.prepCoords = function prepCoords (atoms, coords, n, is4X4) {
     var i = 0;
-    var n3 = n * 3;
     var cd = coords.data;
+    var c = 3;
+    var d = n * 3;
+    if (is4X4) {
+        d = n * 4;
+        c = 4;
+    }
     if (atoms instanceof Structure) {
         atoms.eachAtom(function (a) {
-            if (i < n3) {
+            if (i < d) {
                 cd[i + 0] = a.x;
                 cd[i + 1] = a.y;
                 cd[i + 2] = a.z;
-                i += 3;
+                if (is4X4)
+                    { cd[i + 3] = 1; }
+                i += c;
             }
         });
     }
     else if (atoms instanceof Float32Array) {
-        cd.set(atoms.subarray(0, n3));
+        for (; i < d; i += c) {
+            if (i < d) {
+                cd[i] = atoms[i];
+                cd[i + 1] = atoms[i + 1];
+                cd[i + 2] = atoms[i + 2];
+                if (is4X4)
+                    { cd[i + 3] = 1; }
+            }
+        }
     }
     else {
         Log.warn('prepCoords: input type unknown');
@@ -76892,31 +77082,57 @@ Superposition.prototype.transform = function transform (atoms) {
     else {
         return;
     }
-    var coords = new Matrix(3, n);
-    var tmp = new Matrix(n, 3);
+    var coords = new Matrix(4, n);
+    var tCoords = new Matrix(n, 4);
     // prep coords
-    this.prepCoords(atoms, coords, n);
+    this.prepCoords(atoms, coords, n, true);
+    // check for transformation matrix correctness
+    var transform = this.transformationMatrix;
+    var det = transform.determinant();
+    if (!det) {
+        return det;
+    }
     // do transform
-    subRows(coords, this.mean1);
-    multiplyABt(tmp, this.R, coords);
-    transpose(coords, tmp);
-    addRows(coords, this.mean2);
+    var mult = new Matrix(4, 4);
+    mult.data = transform.elements;
+    multiply(tCoords, coords, mult);
     var i = 0;
-    var cd = coords.data;
+    var cd = tCoords.data;
     if (atoms instanceof Structure) {
         atoms.eachAtom(function (a) {
-            a.x = cd[i + 0];
+            a.x = cd[i];
             a.y = cd[i + 1];
             a.z = cd[i + 2];
-            i += 3;
+            i += 4;
         });
+        //update transformation matrices for each assembly
+        var invertTrasform = new Matrix4();
+        invertTrasform.getInverse(transform);
+        var biomolDict = atoms.biomolDict;
+        for (var key in biomolDict) {
+            if (biomolDict.hasOwnProperty(key)) {
+                var assembly = biomolDict[key];
+                assembly.partList.forEach(function (part) {
+                    part.matrixList.forEach(function (mat) {
+                        mat.premultiply(transform);
+                        mat.multiply(invertTrasform);
+                    });
+                });
+            }
+        }
     }
     else if (atoms instanceof Float32Array) {
-        atoms.set(cd.subarray(0, n * 3));
+        var n4 = n * 4;
+        for (; i < n4; i += 4) {
+            atoms[i] = cd[i];
+            atoms[i + 1] = cd[i + 1];
+            atoms[i + 2] = cd[i + 2];
+        }
     }
     else {
         Log.warn('transform: input type unknown');
     }
+    return this.transformationMatrix;
 };
 
 /**
@@ -78499,8 +78715,9 @@ function superpose(s1, s2, align, sele1, sele2) {
         atoms2 = sviewCa2;
     }
     var superpose = new Superposition(atoms1, atoms2);
-    superpose.transform(s1);
+    var result = superpose.transform(s1);
     s1.refreshPosition();
+    return result;
 }
 
 /**
@@ -79021,8 +79238,12 @@ var StageDefaultParameters = {
     clipNear: 0,
     clipFar: 100,
     clipDist: 10,
+    clipMode: 'scene',
+    clipScale: 'relative',
     fogNear: 50,
     fogFar: 100,
+    fogMode: 'scene',
+    fogScale: 'relative',
     cameraFov: 40,
     cameraEyeSep: 0.3,
     cameraType: 'perspective',
@@ -79119,8 +79340,8 @@ Stage.prototype.setParameters = function setParameters (params) {
     if (p.mousePreset !== undefined)
         { this.mouseControls.preset(tp.mousePreset); }
     this.mouseObserver.setParameters({ hoverTimeout: tp.hoverTimeout });
-    viewer.setClip(tp.clipNear, tp.clipFar, tp.clipDist);
-    viewer.setFog(undefined, tp.fogNear, tp.fogFar);
+    viewer.setClip(tp.clipNear, tp.clipFar, tp.clipDist, tp.clipMode, tp.clipScale);
+    viewer.setFog(undefined, tp.fogNear, tp.fogFar, tp.fogMode, tp.fogScale);
     viewer.setCamera(tp.cameraType, tp.cameraFov, tp.cameraEyeSep);
     viewer.setSampling(tp.sampleLevel);
     viewer.setBackground(tp.backgroundColor);
@@ -79536,12 +79757,18 @@ Stage.prototype.setFocus = function setFocus (value) {
     var clipNear = clamp(value / 2, 0, 49.9);
     var clipFar = 100 - clipNear;
     var diffHalf = (clipFar - clipNear) / 2;
-    this.setParameters({
-        clipNear: clipNear,
-        clipFar: clipFar,
-        fogNear: pclamp(clipFar - diffHalf),
-        fogFar: pclamp(clipFar + diffHalf)
-    });
+    if (this.parameters.clipMode == 'scene') {
+        this.setParameters({
+            clipNear: clipNear,
+            clipFar: clipFar
+        });
+    }
+    if (this.parameters.fogMode == 'scene') {
+        this.setParameters({
+            fogNear: pclamp(clipFar - diffHalf),
+            fogFar: pclamp(clipFar + diffHalf)
+        });
+    }
 };
 Stage.prototype.getZoomForBox = function getZoomForBox (boundingBox) {
     var bbSize = boundingBox.getSize(tmpZoomVector);
@@ -79699,6 +79926,69 @@ Stage.prototype.dispose = function dispose () {
     this.tasks.dispose();
     this.viewer.dispose();
 };
+
+/**
+ * @file Shape Component
+ * @author Alexander Rose <alexander.rose@weirdbyte.de>
+ * @private
+ */
+/**
+ * Component wrapping a {@link Shape} object
+ *
+ * @example
+ * // get a shape component by adding a shape object to the stage
+ * var shape = new NGL.Shape( "shape" );
+ * shape.addSphere( [ 0, 0, 0 ], [ 1, 0, 0 ], 1.5 );
+ * var shapeComponent = stage.addComponentFromObject( shape );
+ * shapeComponent.addRepresentation( "buffer" );
+ */
+var ShapeComponent = (function (Component$$1) {
+    function ShapeComponent(stage, shape, params) {
+        if ( params === void 0 ) params = {};
+
+        Component$$1.call(this, stage, shape, Object.assign({ name: shape.name }, params));
+        this.shape = shape;
+    }
+
+    if ( Component$$1 ) ShapeComponent.__proto__ = Component$$1;
+    ShapeComponent.prototype = Object.create( Component$$1 && Component$$1.prototype );
+    ShapeComponent.prototype.constructor = ShapeComponent;
+
+    var prototypeAccessors = { type: { configurable: true } };
+    /**
+     * Component type
+     * @type {String}
+     */
+    prototypeAccessors.type.get = function () { return 'shape'; };
+    /**
+     * Add a new shape representation to the component
+     * @param {String} type - the name of the representation, one of:
+     *                        buffer.
+     * @param {BufferRepresentationParameters} params - representation parameters
+     * @return {RepresentationComponent} the created representation wrapped into
+     *                                   a representation component object
+     */
+    ShapeComponent.prototype.addRepresentation = function addRepresentation (type, params) {
+        if ( params === void 0 ) params = {};
+
+        return this._addRepresentation(type, this.shape, params);
+    };
+    ShapeComponent.prototype.getBoxUntransformed = function getBoxUntransformed () {
+        return this.shape.boundingBox;
+    };
+    ShapeComponent.prototype.getCenterUntransformed = function getCenterUntransformed () {
+        return this.shape.center;
+    };
+    ShapeComponent.prototype.dispose = function dispose () {
+        this.shape.dispose();
+        Component$$1.prototype.dispose.call(this);
+    };
+
+    Object.defineProperties( ShapeComponent.prototype, prototypeAccessors );
+
+    return ShapeComponent;
+}(Component));
+ComponentRegistry.add('shape', ShapeComponent);
 
 /**
  * @file Atomindex Colormaker
@@ -80408,7 +80698,7 @@ ColormakerRegistry$1.add('element', ElementColormaker);
  * @private
  */
 /**
- * Color by entiry index
+ * Color by entity index
  */
 var EntityindexColormaker = (function (Colormaker$$1) {
     function EntityindexColormaker(params) {
@@ -81112,69 +81402,6 @@ var VolumeColormaker = (function (Colormaker$$1) {
     return VolumeColormaker;
 }(Colormaker));
 ColormakerRegistry$1.add('volume', VolumeColormaker);
-
-/**
- * @file Shape Component
- * @author Alexander Rose <alexander.rose@weirdbyte.de>
- * @private
- */
-/**
- * Component wrapping a {@link Shape} object
- *
- * @example
- * // get a shape component by adding a shape object to the stage
- * var shape = new NGL.Shape( "shape" );
- * shape.addSphere( [ 0, 0, 0 ], [ 1, 0, 0 ], 1.5 );
- * var shapeComponent = stage.addComponentFromObject( shape );
- * shapeComponent.addRepresentation( "buffer" );
- */
-var ShapeComponent = (function (Component$$1) {
-    function ShapeComponent(stage, shape, params) {
-        if ( params === void 0 ) params = {};
-
-        Component$$1.call(this, stage, shape, Object.assign({ name: shape.name }, params));
-        this.shape = shape;
-    }
-
-    if ( Component$$1 ) ShapeComponent.__proto__ = Component$$1;
-    ShapeComponent.prototype = Object.create( Component$$1 && Component$$1.prototype );
-    ShapeComponent.prototype.constructor = ShapeComponent;
-
-    var prototypeAccessors = { type: { configurable: true } };
-    /**
-     * Component type
-     * @type {String}
-     */
-    prototypeAccessors.type.get = function () { return 'shape'; };
-    /**
-     * Add a new shape representation to the component
-     * @param {String} type - the name of the representation, one of:
-     *                        buffer.
-     * @param {BufferRepresentationParameters} params - representation parameters
-     * @return {RepresentationComponent} the created representation wrapped into
-     *                                   a representation component object
-     */
-    ShapeComponent.prototype.addRepresentation = function addRepresentation (type, params) {
-        if ( params === void 0 ) params = {};
-
-        return this._addRepresentation(type, this.shape, params);
-    };
-    ShapeComponent.prototype.getBoxUntransformed = function getBoxUntransformed () {
-        return this.shape.boundingBox;
-    };
-    ShapeComponent.prototype.getCenterUntransformed = function getCenterUntransformed () {
-        return this.shape.center;
-    };
-    ShapeComponent.prototype.dispose = function dispose () {
-        this.shape.dispose();
-        Component$$1.prototype.dispose.call(this);
-    };
-
-    Object.defineProperties( ShapeComponent.prototype, prototypeAccessors );
-
-    return ShapeComponent;
-}(Component));
-ComponentRegistry.add('shape', ShapeComponent);
 
 /**
  * @file Structure Representation
@@ -87480,19 +87707,19 @@ function AVSurface(coordList, radiusList, indexList) {
         // 1) Initialize
         // 2) Project points
         // 3) Project torii
-        console.time('AVSurface.getVolume');
-        console.time('AVSurface.init');
+        // console.time('AVSurface.getVolume')
+        // console.time('AVSurface.init')
         init(probeRadius, scaleFactor, setAtomID);
-        console.timeEnd('AVSurface.init');
-        console.time('AVSurface.projectPoints');
+        // console.timeEnd('AVSurface.init')
+        // console.time('AVSurface.projectPoints')
         projectPoints();
-        console.timeEnd('AVSurface.projectPoints');
-        console.time('AVSurface.projectTorii');
+        // console.timeEnd('AVSurface.projectPoints')
+        // console.time('AVSurface.projectTorii')
         projectTorii();
-        console.timeEnd('AVSurface.projectTorii');
+        // console.timeEnd('AVSurface.projectTorii')
         fixNegatives();
         fixAtomIDs();
-        console.timeEnd('AVSurface.getVolume');
+        // console.timeEnd('AVSurface.getVolume')
     }
     this.getSurface = function (type, probeRadius, scaleFactor, cutoff, setAtomID, smooth, contour) {
         // type and cutoff left in for compatibility with EDTSurface.getSurface
@@ -89302,14 +89529,69 @@ var EllipsoidBuffer = (function (GeometryBuffer$$1) {
 BufferRegistry.add('ellipsoid', EllipsoidBuffer);
 
 /**
- * @file Octahedron Buffer
- * @author Alexander Rose <alexander.rose@weirdbyte.de>
+ * @file Icosahedron Buffer
  * @private
  */
 var scale$5 = new Vector3();
 var target$4 = new Vector3();
 var up$4 = new Vector3();
 var eye$4 = new Vector3(0, 0, 0);
+/**
+ * Icosahedron buffer. Draws Icosahedrons.
+ *
+ * @example
+ * var icosahedronBuffer = new IcosahedronBuffer({
+ *   position: new Float32Array([ 0, 3, 0, -2, 0, 0 ]),
+ *   color: new Float32Array([ 1, 0, 1, 0, 1, 0 ]),
+ *   size: new Float32Array([ 2, 1.5 ]),
+ *   heightAxis: new Float32Array([ 0, 1, 1, 0, 2, 0 ]),
+ *   depthAxis: new Float32Array([ 1, 0, 1, 0, 0, 2 ])
+ * })
+ */
+var IcosahedronBuffer = (function (GeometryBuffer$$1) {
+    function IcosahedronBuffer(data, params) {
+        if ( params === void 0 ) params = {};
+
+        GeometryBuffer$$1.call(this, data, params, new IcosahedronBufferGeometry(1, 0));
+        this.updateNormals = true;
+        this.setAttributes(data, true);
+    }
+
+    if ( GeometryBuffer$$1 ) IcosahedronBuffer.__proto__ = GeometryBuffer$$1;
+    IcosahedronBuffer.prototype = Object.create( GeometryBuffer$$1 && GeometryBuffer$$1.prototype );
+    IcosahedronBuffer.prototype.constructor = IcosahedronBuffer;
+    IcosahedronBuffer.prototype.applyPositionTransform = function applyPositionTransform (matrix, i, i3) {
+        target$4.fromArray(this._heightAxis, i3);
+        up$4.fromArray(this._depthAxis, i3);
+        matrix.lookAt(eye$4, target$4, up$4);
+        scale$5.set(this._size[i], up$4.length(), target$4.length());
+        matrix.scale(scale$5);
+    };
+    IcosahedronBuffer.prototype.setAttributes = function setAttributes (data, initNormals) {
+        if ( data === void 0 ) data = {};
+
+        if (data.size)
+            { this._size = data.size; }
+        if (data.heightAxis)
+            { this._heightAxis = data.heightAxis; }
+        if (data.depthAxis)
+            { this._depthAxis = data.depthAxis; }
+        GeometryBuffer$$1.prototype.setAttributes.call(this, data, initNormals);
+    };
+
+    return IcosahedronBuffer;
+}(GeometryBuffer));
+BufferRegistry.add('icosahedron', IcosahedronBuffer);
+
+/**
+ * @file Octahedron Buffer
+ * @author Alexander Rose <alexander.rose@weirdbyte.de>
+ * @private
+ */
+var scale$6 = new Vector3();
+var target$5 = new Vector3();
+var up$5 = new Vector3();
+var eye$5 = new Vector3(0, 0, 0);
 /**
  * Octahedron buffer. Draws octahedrons.
  *
@@ -89335,11 +89617,11 @@ var OctahedronBuffer = (function (GeometryBuffer$$1) {
     OctahedronBuffer.prototype = Object.create( GeometryBuffer$$1 && GeometryBuffer$$1.prototype );
     OctahedronBuffer.prototype.constructor = OctahedronBuffer;
     OctahedronBuffer.prototype.applyPositionTransform = function applyPositionTransform (matrix, i, i3) {
-        target$4.fromArray(this._heightAxis, i3);
-        up$4.fromArray(this._depthAxis, i3);
-        matrix.lookAt(eye$4, target$4, up$4);
-        scale$5.set(this._size[i], up$4.length(), target$4.length());
-        matrix.scale(scale$5);
+        target$5.fromArray(this._heightAxis, i3);
+        up$5.fromArray(this._depthAxis, i3);
+        matrix.lookAt(eye$5, target$5, up$5);
+        scale$6.set(this._size[i], up$5.length(), target$5.length());
+        matrix.scale(scale$6);
     };
     OctahedronBuffer.prototype.setAttributes = function setAttributes (data, initNormals) {
         if ( data === void 0 ) data = {};
@@ -89362,10 +89644,10 @@ BufferRegistry.add('octahedron', OctahedronBuffer);
  * @author Alexander Rose <alexander.rose@weirdbyte.de>
  * @private
  */
-var scale$6 = new Vector3();
-var target$5 = new Vector3();
-var up$5 = new Vector3();
-var eye$5 = new Vector3(0, 0, 0);
+var scale$7 = new Vector3();
+var target$6 = new Vector3();
+var up$6 = new Vector3();
+var eye$6 = new Vector3(0, 0, 0);
 /**
  * Tetrahedron buffer. Draws tetrahedrons.
  *
@@ -89391,11 +89673,11 @@ var TetrahedronBuffer = (function (GeometryBuffer$$1) {
     TetrahedronBuffer.prototype = Object.create( GeometryBuffer$$1 && GeometryBuffer$$1.prototype );
     TetrahedronBuffer.prototype.constructor = TetrahedronBuffer;
     TetrahedronBuffer.prototype.applyPositionTransform = function applyPositionTransform (matrix, i, i3) {
-        target$5.fromArray(this._heightAxis, i3);
-        up$5.fromArray(this._depthAxis, i3);
-        matrix.lookAt(eye$5, target$5, up$5);
-        scale$6.set(this._size[i], up$5.length(), target$5.length());
-        matrix.scale(scale$6);
+        target$6.fromArray(this._heightAxis, i3);
+        up$6.fromArray(this._depthAxis, i3);
+        matrix.lookAt(eye$6, target$6, up$6);
+        scale$7.set(this._size[i], up$6.length(), target$6.length());
+        matrix.scale(scale$7);
     };
     TetrahedronBuffer.prototype.setAttributes = function setAttributes (data, initNormals) {
         if ( data === void 0 ) data = {};
@@ -89418,10 +89700,10 @@ BufferRegistry.add('tetrahedron', TetrahedronBuffer);
  * @author Alexander Rose <alexander.rose@weirdbyte.de>
  * @private
  */
-var scale$7 = new Vector3();
-var target$6 = new Vector3();
-var up$6 = new Vector3();
-var eye$6 = new Vector3(0, 0, 0);
+var scale$8 = new Vector3();
+var target$7 = new Vector3();
+var up$7 = new Vector3();
+var eye$7 = new Vector3(0, 0, 0);
 var TorusBufferDefaultParameters = Object.assign({
     radiusRatio: 0.2,
     radialSegments: 16,
@@ -89455,12 +89737,12 @@ var TorusBuffer = (function (GeometryBuffer$$1) {
     var prototypeAccessors = { defaultParameters: { configurable: true } };
     prototypeAccessors.defaultParameters.get = function () { return TorusBufferDefaultParameters; };
     TorusBuffer.prototype.applyPositionTransform = function applyPositionTransform (matrix, i, i3) {
-        target$6.fromArray(this._majorAxis, i3);
-        up$6.fromArray(this._minorAxis, i3);
-        matrix.lookAt(eye$6, target$6, up$6);
+        target$7.fromArray(this._majorAxis, i3);
+        up$7.fromArray(this._minorAxis, i3);
+        matrix.lookAt(eye$7, target$7, up$7);
         var r = this._radius[i];
-        scale$7.set(r, r, r);
-        matrix.scale(scale$7);
+        scale$8.set(r, r, r);
+        matrix.scale(scale$8);
     };
     TorusBuffer.prototype.setAttributes = function setAttributes (data, initNormals) {
         if ( data === void 0 ) data = {};
@@ -100743,8 +101025,12 @@ var UIStageParameters = {
     clipNear: RangeParam(1, 100, 0),
     clipFar: RangeParam(1, 100, 0),
     clipDist: IntegerParam(200, 0),
+    clipMode: SelectParam('scene', 'camera'),
+    clipScale: SelectParam('relative', 'absolute'),
     fogNear: RangeParam(1, 100, 0),
     fogFar: RangeParam(1, 100, 0),
+    fogMode: SelectParam('scene', 'camera'),
+    fogScale: SelectParam('relative', 'absolute'),
     cameraType: SelectParam('perspective', 'orthographic', 'stereo'),
     cameraEyeSep: NumberParam(3, 1.0, 0.01),
     cameraFov: RangeParam(1, 120, 15),
@@ -100757,7 +101043,7 @@ var UIStageParameters = {
     mousePreset: SelectParam.apply(void 0, Object.keys(MouseActionPresets))
 };
 
-var version$1 = "2.0.0-dev.35";
+var version$1 = "2.0.0-dev.37-cresset";
 
 /**
  * @file Version
@@ -100779,5 +101065,5 @@ if (!window.Promise) {
     window.Promise = Promise$1;
 }
 
-export { Version, StaticDatasource, MdsrvDatasource, Colormaker, Selection, PdbWriter, SdfWriter, StlWriter, Stage, Collection, ComponentCollection, RepresentationCollection, Assembly, TrajectoryPlayer, Superposition, Frames, Queue, Counter, BufferRepresentation, ArrowBuffer, BoxBuffer, ConeBuffer, CylinderBuffer, EllipsoidBuffer, MeshBuffer, OctahedronBuffer, PointBuffer, SphereBuffer, TetrahedronBuffer, TextBuffer, TorusBuffer, WideLineBuffer as WidelineBuffer, Shape$1 as Shape, Structure, Kdtree$1 as Kdtree, SpatialHash, MolecularSurface, Volume, MouseActions, KeyActions, Debug, setDebug, MeasurementDefaultParams, setMeasurementDefaultParams, ScriptExtensions, ColormakerRegistry$1 as ColormakerRegistry, DatasourceRegistry, DecompressorRegistry, ParserRegistry$1 as ParserRegistry, RepresentationRegistry, setListingDatasource, setTrajectoryDatasource, ListingDatasource, TrajectoryDatasource, autoLoad, getDataInfo, getFileInfo, superpose, guessElement, concatStructures, flatten$1 as flatten, throttle, download, getQuery, uniqueArray, LeftMouseButton, MiddleMouseButton, RightMouseButton, signals_1 as Signal, Matrix3, Matrix4, Vector2, Vector3, Box3, Quaternion, Euler, Plane, Color, UIStageParameters };
+export { Version, StaticDatasource, MdsrvDatasource, Colormaker, Selection, PdbWriter, SdfWriter, StlWriter, Stage, Collection, ComponentCollection, RepresentationCollection, Component, ShapeComponent, StructureComponent, SurfaceComponent, VolumeComponent, Assembly, TrajectoryPlayer, Superposition, Frames, Queue, Counter, BufferRepresentation, ArrowBuffer, BoxBuffer, ConeBuffer, CylinderBuffer, EllipsoidBuffer, IcosahedronBuffer, MeshBuffer, OctahedronBuffer, PointBuffer, SphereBuffer, TetrahedronBuffer, TextBuffer, TorusBuffer, WideLineBuffer as WidelineBuffer, Shape$1 as Shape, Structure, Kdtree$1 as Kdtree, SpatialHash, MolecularSurface, Volume, MouseActions, KeyActions, Debug, setDebug, MeasurementDefaultParams, setMeasurementDefaultParams, ScriptExtensions, ColormakerRegistry$1 as ColormakerRegistry, DatasourceRegistry, DecompressorRegistry, ParserRegistry$1 as ParserRegistry, RepresentationRegistry, setListingDatasource, setTrajectoryDatasource, ListingDatasource, TrajectoryDatasource, autoLoad, getDataInfo, getFileInfo, superpose, guessElement, concatStructures, flatten$1 as flatten, throttle, download, getQuery, uniqueArray, LeftMouseButton, MiddleMouseButton, RightMouseButton, signals_1 as Signal, Matrix3, Matrix4, Vector2, Vector3, Box3, Quaternion, Euler, Plane, Color, UIStageParameters };
 //# sourceMappingURL=ngl.esm.js.map
